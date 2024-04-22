@@ -1,7 +1,7 @@
 ﻿// TALK TO CHATGPT
 // ---------------
 // Author		: C. NEDELCU
-// Version		: 2.8.1 (17/09/2023)
+// Version		: 2.9.0 (03/12/2023)
 // Git repo 	: https://github.com/C-Nedelcu/talk-to-chatgpt
 // Chat GPT URL	: https://chat.openai.com/chat
 // How to use   : https://www.youtube.com/watch?v=VXkLQMEs3lA
@@ -58,16 +58,26 @@ var CN_TTS_ELEVENLABS_APIKEY = "";
 var CN_TTS_ELEVENLABS_VOICE = "";
 
 // Statically list ElevenLabs models (easier than to request from API)
-var CN_TTS_ELEVENLABS_MODELS = {"eleven_monolingual_v1": "English only",
+var CN_TTS_ELEVENLABS_MODELS = {
+	"eleven_monolingual_v1": "English only",
 	"eleven_multilingual_v2": "Multi-language (autodetect) V2",
-	"eleven_multilingual_v1": "Multi-language (autodetect) V1"};
+	"eleven_multilingual_v1": "Multi-language (autodetect) V1",
+	"eleven_english_sts_v2": "Eleven English v2",
+	"eleven_turbo_v2": "Eleven Turbo v2"
+};
 
 // Other ElevenLabs settings
 var CN_TTS_ELEVENLABS_STABILITY = "";
 var CN_TTS_ELEVENLABS_SIMILARITY = "";
 
 // ----------------------------
-
+var CN_TTS_AZURE = false; 
+var CN_TTS_AZURE_APIKEY = "";
+var CN_TTS_AZURE_REGION = "";
+var CN_TTS_AZURE_VOICE = "";
+var CN_TTS_AZURE_QUEUE = [];
+var CN_IS_CONVERTING_AZURE = false;
+var CN_IS_PLAYING_AZURE = false;
 
 // -------------------
 // CODE (DO NOT ALTER)
@@ -155,6 +165,12 @@ function CN_SayOutLoud(text) {
 		CN_SayOutLoudElevenLabs(text);
 		return;
 	}
+
+	if (CN_TTS_AZURE) {
+		// console.log("[AZURE] Saying out loud: " + text);
+		CN_SayOutLoudAzure(text); // Implement this function to use Azure TTS
+		return;
+	}
 	
 	// Let's speak out loud with the browser's text-to-speech API
 	console.log("[BROWSER] Saying out loud: " + text);
@@ -182,6 +198,178 @@ function CN_SayOutLoud(text) {
 	CN_IS_READING = true;
 	window.speechSynthesis.speak(msg);
 }
+
+// Function to perform text-to-speech using Azure
+function CN_SayOutLoudAzure(text) {
+
+	// Make border green
+	setStatusBarBackground("green");
+
+	 // Add the text to the queue
+	 CN_TTS_AZURE_QUEUE.push({
+        text: text,
+        audio: null,
+        converted: false,
+        played: false
+    });
+
+    // If the TTS conversion task isn't running, run it
+    if (!CN_IS_CONVERTING_AZURE) {
+        processAzureTTSQueue();
+    }
+}
+
+
+// Function to process the next item in the queue
+async function processAzureTTSQueue() {
+    if (CN_TTS_AZURE_QUEUE.length === 0) {
+        // No more items in the queue
+        return;
+    }
+
+    // Identify next message to be converted
+    let obj = null;
+    let objIndex = null;
+    for(let i in CN_TTS_AZURE_QUEUE) {
+        if (!CN_TTS_AZURE_QUEUE[i].converted) {
+            obj = CN_TTS_AZURE_QUEUE[i];
+            objIndex = i;
+            break;
+        }
+    }
+
+    // If we didn't find an object to convert, then we are done
+    if (obj === null) {
+        CN_IS_CONVERTING_AZURE = false;
+        return;
+    }
+
+    // Start converting TTS
+    CN_IS_CONVERTING_AZURE = true;
+
+	let lang, gender, name;
+	// console.log("CN_TTS_AZURE_VOICE: " + CN_TTS_AZURE_VOICE);
+	if (CN_TTS_AZURE_VOICE) {
+		let parts = CN_TTS_AZURE_VOICE.split(", ");
+		lang = parts[0];
+		gender = parts[1];
+		name = parts[2];
+	} else {
+		// Default values
+		lang = 'en-US';
+		gender = 'Male';
+		name = 'en-US-TonyNeural';
+	}
+	
+	// Create the request body
+	const body = `<speak version='1.0' xml:lang='${lang}'><voice xml:lang='${lang}' xml:gender='${gender}' name='${name}'>${obj.text}</voice></speak>`;
+	 // Send the request
+	 const response = await fetch(`https://${CN_TTS_AZURE_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/ssml+xml',
+            'X-Microsoft-OutputFormat': 'riff-24khz-16bit-mono-pcm',
+            'Ocp-Apim-Subscription-Key': CN_TTS_AZURE_APIKEY,
+            'User-Agent': 'your_resource_name'
+        },
+        body: body
+    });
+
+
+	const audioData = await response.arrayBuffer();
+
+    // The response is the audio data in a binary format
+    // Use the Web Audio API to play the audio data
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const buffer = await audioContext.decodeAudioData(audioData);
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+
+    // Save the audio source to the queue
+    CN_TTS_AZURE_QUEUE[objIndex].audio = source;
+    CN_TTS_AZURE_QUEUE[objIndex].converted = true;
+
+    // Start audio playback if not already
+    if (!CN_IS_PLAYING_AZURE) {
+        processAzurePlaybackQueue();
+    }
+
+    // Continue conversions if any
+    processAzureTTSQueue();
+
+
+}
+
+
+
+
+// Process the next item in the audio queue
+function processAzurePlaybackQueue() {
+    // Identify next message to be played
+    var obj = null;
+    var objIndex = null;
+    for (var i in CN_TTS_AZURE_QUEUE) {
+        if (CN_TTS_AZURE_QUEUE[i].converted && !CN_TTS_AZURE_QUEUE[i].played) {
+            obj = CN_TTS_AZURE_QUEUE[i];
+            objIndex = i;
+            break;
+        }
+    }
+
+    // If we didn't find an object to play, then we are done
+    if (obj === null) {
+        // If there are no more sentences left in the queue, call CN_AfterSpeakOutLoudFinished
+        if (!CN_TTS_AZURE_QUEUE.some(item => !item.played)) {
+            CN_AfterSpeakOutLoudFinished();
+        }
+        return;
+    }
+
+    // Play and set on-ended function
+    CN_IS_PLAYING_AZURE = true;
+    obj.audio.start(0);
+    obj.audio.onended = function() {
+        // Mark as played so it doesn't play twice
+        CN_TTS_AZURE_QUEUE[objIndex].played = true;
+
+        // What's next?
+        CN_IS_PLAYING_AZURE = false;
+		// setStatusBarBackground("red"); // Set status bar color to red when a text finishes playing
+        processAzurePlaybackQueue();
+    };
+}
+
+function getAzureVoices(apikey, region) {
+	if (!region) return;
+	if (!apikey) return;
+	
+    // Define the endpoint
+    var endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/voices/list`;
+
+    // Define the request options
+    var options = {
+        method: "GET",
+        headers: {
+            "Ocp-Apim-Subscription-Key": apikey,
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+    };
+
+    // Make the request and return the promise
+    return fetch(endpoint, options)
+        .then(response => response.json())
+		.then(data => data.map(voice => {
+			// Extract the language, gender, and name
+			let lang = voice.Locale;
+			let gender = voice.Gender;
+			let name = voice.ShortName;
+			return {lang: lang, gender: gender, name: name};
+            // return {name: name, id: name};
+        }))
+		.catch(error => alert("Error: " + error));
+}
+
 
 // Say a message out loud using ElevenLabs
 function CN_SayOutLoudElevenLabs(text) {
@@ -1097,7 +1285,7 @@ function CN_InitScript() {
 				"<a href='https://github.com/C-Nedelcu/talk-to-chatgpt' " +
 					"style='display: inline-block; font-size: 16px; line-height: 80%; padding: 4px 0;' " +
 					"target=_blank title='Visit project website'>TALK-TO-ChatGPT<br />" +
-					"<div style='text-align: right; font-size: 11px; color: grey'>V2.8.1</div>" +
+					"<div style='text-align: right; font-size: 11px; color: grey'>V2.9.0</div>" +
 				"</a>" +
 			"</div>" +
 			
@@ -1281,13 +1469,13 @@ function CN_OnSettingsIconClick() {
 	}
 	rows += "<tr><td style='white-space: nowrap'>Speech recognition language:</td><td><select id='TTGPTRecLang' style='width: 250px; padding: 2px; color: black;' >"+languages+"</select></td></tr>";
 	
-	rows += "<tr class='CNBrowserTTS' ><td style='white-space: nowrap'>AI voice and language:</td><td><select id='TTGPTVoice' style='width: 250px; padding: 2px; color: black'>" + voices + "</select></td></tr>";
+	rows += "<tr class='CNBrowserTTS' id='CNBrowserTTS0'><td style='white-space: nowrap'>AI voice and language:</td><td><select id='TTGPTVoice' style='width: 250px; padding: 2px; color: black'>" + voices + "</select></td></tr>";
 	
 	// 2. AI talking speed
-	rows += "<tr class='CNBrowserTTS' ><td style='white-space: nowrap'>AI talking speed (speech rate):</td><td><input type=number step='.1' id='TTGPTRate' style='color: black; padding: 2px; width: 100px;' value='" + CN_TEXT_TO_SPEECH_RATE + "' /></td></tr>";
+	rows += "<tr class='CNBrowserTTS' id='CNBrowserTTS1'><td style='white-space: nowrap'>AI talking speed (speech rate):</td><td><input type=number step='.1' id='TTGPTRate' style='color: black; padding: 2px; width: 100px;' value='" + CN_TEXT_TO_SPEECH_RATE + "' /></td></tr>";
 	
 	// 3. AI voice pitch
-	rows += "<tr class='CNBrowserTTS' ><td style='white-space: nowrap'>AI voice pitch:</td><td><input type=number step='.1' id='TTGPTPitch' style='width: 100px; padding: 2px; color: black;' value='" + CN_TEXT_TO_SPEECH_PITCH + "' /></td></tr>";
+	rows += "<tr class='CNBrowserTTS' id='CNBrowserTTS2'><td style='white-space: nowrap'>AI voice pitch:</td><td><input type=number step='.1' id='TTGPTPitch' style='width: 100px; padding: 2px; color: black;' value='" + CN_TEXT_TO_SPEECH_PITCH + "' /></td></tr>";
 
 	// 4. ElevenLabs
 	rows += "<tr><td style='white-space: nowrap'>ElevenLabs text-to-speech:</td><td><input type=checkbox id='TTGPTElevenLabs' " + (CN_TTS_ELEVENLABS ? "checked=checked" : "") + " /> <label for='TTGPTElevenLabs'> Use ElevenLabs API for text-to-speech (tick this to reveal additional settings)</label></td></tr>";
@@ -1308,7 +1496,20 @@ function CN_OnSettingsIconClick() {
 	
 	// 7. ElevenLabs warning
 	rows += "<tr class='CNElevenLabs' style='display: none;'><td colspan=2>Warning: the ElevenLabs API is experimental. It doesn't work with every language, make sure you check the list of supported language from their website. We will keep up with ElevenLabs progress to ensure all ElevenLabs API functionality is available in Talk-to-ChatGPT.</td></tr>";
-	
+
+	// Azure text-to-speech
+	rows += "<tr><td style='white-space: nowrap'>Azure text-to-speech:</td><td><input type=checkbox id='TTGPTAzureTTS' " + (CN_TTS_AZURE ? "checked=checked" : "") + " /> <label for='TTGPTAzureTTS'> Use Azure API for text-to-speech (tick this to reveal additional settings)</label></td></tr>";
+
+	// Azure voice with refresh button
+	rows += "<tr class='CNAzureTTS' style='display: none;'><td style='white-space: nowrap'>Azure voice:</td><td><select id='TTGPTAzureVoice' style='width: 250px; padding: 2px; color: black;' ></select> <span style='cursor: pointer; text-decoration: underline;' id='TTGPTAzureRefresh' title='This will refresh the list of voices using your API key'>Refresh list</span></span></td></tr>";
+
+
+	// Azure API Key
+	rows += "<tr class='CNAzureTTS' style='display: none;'><td style='white-space: nowrap'>Azure API Key:</td><td><input type=text style='width: 250px; padding: 2px; color: black;' id='TTGPTAzureAPIKey' value=\"" + CN_TTS_AZURE_APIKEY + "\" /></td></tr>";
+
+	// Azure Region
+	rows += "<tr class='CNAzureTTS' style='display: none;'><td style='white-space: nowrap'>Azure Region:</td><td><input type=text style='width: 250px; padding: 2px; color: black;' id='TTGPTAzureRegion' value=\"" + CN_TTS_AZURE_REGION + "\" /></td></tr>";
+
 	// Prepare save/close buttons
 	rows += "<tr><td colspan=2 style='text-align: center'><br />" +
 		"<button class='TTGPTSave' style='border: 2px solid grey; border-radius: 4px; padding: 6px 24px; font-size: 18px; font-weight: bold; opacity: 0.7;'>✓ Save</button>&nbsp;" +
@@ -1382,19 +1583,10 @@ function CN_OnSettingsIconClick() {
 		jQuery(".TTGPTSave").on("click", CN_SaveSettings);
 		jQuery(".TTGPTCancel").on("click", CN_CloseSettingsDialog);
 		
-		// Is ElevenLabs enabled? toggle visibility, refresh voice list
-		if (CN_TTS_ELEVENLABS) {
-			jQuery(".CNElevenLabs").show();
-			jQuery(".CNBrowserTTS").hide();
-			CN_RefreshElevenLabsVoiceList(true);
-		} else {
-			jQuery(".CNElevenLabs").hide();
-			jQuery(".CNBrowserTTS").show();
-		}
-		
 		// When the ElevenLabs option is changed
 		jQuery("#TTGPTElevenLabs").on("change", function() {
 			if (jQuery(this).prop("checked")) {
+				jQuery("#TTGPTAzureTTS").prop("checked", false).trigger("change");
 				jQuery(".CNElevenLabs").show();
 				jQuery(".CNBrowserTTS").hide();
 				CN_RefreshElevenLabsVoiceList(true);
@@ -1414,9 +1606,96 @@ function CN_OnSettingsIconClick() {
 		jQuery("#TTGPTElevenLabsKey").on("change", function () {
 			CN_RefreshElevenLabsVoiceList(true);
 		});
+
 		
+		if (CN_TTS_AZURE) {
+			// Enable Azure feature
+			jQuery(".CNAzureTTS").show();
+			refreshAzureVoices()
+
+		} else {
+			// Disable Azure feature
+			jQuery(".CNAzureTTS").hide();
+		}
+
+		$("#azureCheckbox").on("change", function() {
+			CN_TTS_AZURE = this.checked;
+		});
+
+		jQuery("#TTGPTAzureVoice").on("change", function() {
+			CN_TTS_AZURE_VOICE = this.value;
+			console.log("CN_TTS_AZURE_VOICE: " + CN_TTS_AZURE_VOICE);
+		});
+
+		$("#azureCheckbox").prop('checked', CN_TTS_AZURE);
+
+		// When the Azure TTS option is changed
+		jQuery("#TTGPTAzureTTS").on("change", function() {
+			if (jQuery(this).prop("checked")) {
+				jQuery("#TTGPTElevenLabs").prop("checked", false).trigger("change");
+				jQuery(".CNAzureTTS").show();
+				jQuery(".CNBrowserTTS").hide();
+				jQuery(".CNElevenLabs").hide(); // Hide ElevenLabs settings if Azure is selected
+				refreshAzureVoices();
+			} else {
+				jQuery(".CNAzureTTS").hide();
+				jQuery(".CNBrowserTTS").show();
+			}
+		});
+
+		// When the 'Refresh list' button for Azure is clicked
+		jQuery("#TTGPTAzureRefresh").on("click", function() {
+			refreshAzureVoices();
+		});
+
+		// When the Azure API key is changed
+		jQuery("#TTGPTAzureAPIKey").on("change", function () {
+			refreshAzureVoices();
+		});
+
+		jQuery("#TTGPTAzureRegion").on("change", function () {
+			refreshAzureVoices();
+		});
 		
+		// Is ElevenLabs enabled? toggle visibility, refresh voice list
+		setTimeout(function() {
+			$("#TTGPTElevenLabs").trigger("change");
+			$("#TTGPTAzureTTS").trigger("change");
+		}, 50);
 	}, 100);
+}
+
+
+function refreshAzureVoices() {
+    var azureVoiceDropdown = jQuery("#TTGPTAzureVoice");
+
+    // Clear the dropdown
+    azureVoiceDropdown.empty();
+
+
+	// var useKeyFromTextField = CN_TTS_AZURE_APIKEY == "" ? true : false;
+	var useKeyFromTextField = true;
+    let apikey = useKeyFromTextField ? jQuery("#TTGPTAzureAPIKey").val() : CN_TTS_AZURE_APIKEY;
+    let region = useKeyFromTextField ? jQuery("#TTGPTAzureRegion").val() : CN_TTS_AZURE_REGION;
+	
+
+	console.log("Using API key: " + apikey);
+	console.log("Using region: " + region);
+
+
+    // Repopulate the dropdown
+    getAzureVoices(apikey, region).then(azureVoices => {
+        azureVoices.forEach(function(voice) {
+            let optionText = `${voice.lang}, ${voice.gender}, ${voice.name}`;
+            azureVoiceDropdown.append(new Option(optionText, optionText));
+        });
+        // Set the selected voice
+        azureVoiceDropdown.val(CN_TTS_AZURE_VOICE);
+
+		console.log("Using voice: " + CN_TTS_AZURE_VOICE);
+    }).catch(error => {
+        console.error("Error:", error);
+    });
 }
 
 // Save settings and close dialog box
@@ -1450,6 +1729,15 @@ function CN_SaveSettings() {
 		CN_TTS_ELEVENLABS_STABILITY = jQuery("#TTGPTElevenLabsStability").val();
 		CN_TTS_ELEVENLABS_SIMILARITY = jQuery("#TTGPTElevenLabsSimilarity").val();
 		
+
+		// Inside the CN_SaveSettings function
+		CN_TTS_AZURE = jQuery("#TTGPTAzureTTS").prop("checked");
+		CN_TTS_AZURE_APIKEY = jQuery("#TTGPTAzureAPIKey").val();
+		CN_TTS_AZURE_REGION = jQuery("#TTGPTAzureRegion").val();
+		CN_TTS_AZURE_VOICE = jQuery("#TTGPTAzureVoice").val();
+
+
+
 		// If ElevenLabs is active, and that there is no voice, error out
 		if (CN_TTS_ELEVENLABS && !CN_TTS_ELEVENLABS_VOICE) {
 			alert("To enable ElevenLabs support, you must select a voice in the dropdown list. Click the Refresh List button. If no voice appears in the list, check your API key. If you are 100% sure your API key is valid, please report the issue on the Github project page, on the Issues tab.");
@@ -1477,7 +1765,11 @@ function CN_SaveSettings() {
 			CN_TTS_ELEVENLABS_VOICE,
 			CN_TTS_ELEVENLABS_STABILITY,
 			CN_TTS_ELEVENLABS_SIMILARITY,
-			CN_SPEAK_EMOJIS?1:0
+			CN_SPEAK_EMOJIS?1:0,
+			CN_TTS_AZURE?1:0,
+			CN_TTS_AZURE_APIKEY,
+			CN_TTS_AZURE_REGION,
+			CN_TTS_AZURE_VOICE
 		];
 		CN_SetCookie("CN_TTGPT", JSON.stringify(settings));
 	} catch(e) { alert('Invalid settings values. '+e.toString()); return; }
@@ -1514,6 +1806,11 @@ function CN_RestoreSettings() {
 			if (settings.hasOwnProperty(14)) CN_TTS_ELEVENLABS_STABILITY = settings[14];
 			if (settings.hasOwnProperty(15)) CN_TTS_ELEVENLABS_SIMILARITY = settings[15];
 			if (settings.hasOwnProperty(16)) CN_SPEAK_EMOJIS = settings[16] == 1;
+			if (settings.hasOwnProperty(17)) CN_TTS_AZURE = settings[17] == 1;
+			if (settings.hasOwnProperty(18)) CN_TTS_AZURE_APIKEY = settings[18];
+			if (settings.hasOwnProperty(19)) CN_TTS_AZURE_REGION = settings[19];
+			if (settings.hasOwnProperty(20)) CN_TTS_AZURE_VOICE = settings[20];
+			
 		}
 	} catch (ex) {
 		console.error(ex);
@@ -1613,9 +1910,14 @@ function CN_RefreshElevenLabsVoiceList(useKeyFromTextField) {
 					if (sel) found = true;
 					
 					// Add to proper list
-					var isMultiling = typeof result.voices[i].high_quality_base_model_ids == "object" ? result.voices[i].high_quality_base_model_ids.length : 0;
-					if (modelIndex == 1 && isMultiling) continue;
-					if (modelIndex > 1 && !isMultiling) continue;
+					var isMultiling = typeof result.voices[i].high_quality_base_model_ids == "object" ?
+						result.voices[i].high_quality_base_model_ids.length : 0;
+					var isCloned = result.voices[i].category == "cloned";
+					if (!isCloned) {
+						// Cloned voices can be used with all models
+						if (modelIndex == 1 && isMultiling) continue;
+						if (modelIndex > 1 && !isMultiling) continue;
+					}
 					optionList += "<option value='" + id + "' " + sel + ">" + name + "</option>";
 				}
 				optionList += "</optgroup>";
@@ -1641,7 +1943,7 @@ function CN_RefreshElevenLabsVoiceList(useKeyFromTextField) {
 			alert("[Talk-to-ChatGPT] Sorry, but jQuery was not able to load. The script cannot run. Try using Google Chrome or Edge on Windows 11") :
 			CN_CheckCorrectPage();
 	}, 500);
-	
+
 })();
 
 // List of languages for speech recognition - Pulled from https://www.google.com/intl/en/chrome/demos/speech.html
